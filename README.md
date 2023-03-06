@@ -1,5 +1,6 @@
 # onnx-util
 ## Infer Shape
+    import onnx
     from onnx_util.onnx_util import *
     
     model = infer_shape(input_path:str, temp_model_path:str)
