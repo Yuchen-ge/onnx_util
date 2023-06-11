@@ -3,7 +3,7 @@
     import onnx
     from onnx_util.onnx_util import *
     
-    model = infer_shape(input_path:str, temp_model_path:str)
+    model = infer_shape(input_path:str)
     onnx.save(model,model_path)
     
 ## Extract_model

@@ -1,7 +1,7 @@
 import onnx
 import onnxruntime
 import os
-
+import copy
 import onnx.checker
 import onnx.helper as helper
 import numpy as np
@@ -207,8 +207,7 @@ class Extractor:
 
         return model
 
-def get_input(model_path):
-    model = onnx.load(model_path)
+def get_input(model):
     inputs = model.graph.input
     input_dic = {}
     for i in inputs:
@@ -219,10 +218,7 @@ def get_input(model_path):
             if tensor_type.HasField("shape"): 
                 for index, d in enumerate(tensor_type.shape.dim):
                     if(d.HasField("dim_param")):
-                        # if index ==0:
-                        input_list.append(16)
-                        # else:
-                        #     input_list.append(512)
+                        input_list.append(1)
                     elif(d.HasField("dim_value")):
                         if d.dim_value > 0:
                             input_list.append(d.dim_value)
@@ -258,7 +254,7 @@ def extract_model(
     if not output_names:
         raise ValueError("Output tensor names shall not be empty!")
 
-    model = infer_shape(input_path,'tmp.onnx')
+    model = infer_shape(input_path)
     model = reorder_node(model)
     # onnx.checker.check_model(model)
     
@@ -277,70 +273,55 @@ def reorder_node(model):
     output = model.graph.output
     value_info = model.graph.value_info
     opset = model.opset_import
-    names = []
+    flag = []
     for i in input:
-        names.append(i.name)
+        flag.append(i.name)
     for i in initialize:
-        names.append(i.name)
-    new_node = []
-    flag = {node.name : False for node in nodes}
-    # breakpoint()
+        flag.append(i.name)
+    new_node =[]
     while True:
-        for index,node in enumerate(nodes):
+        for node in nodes:
             if node.op_type == 'Constant':
-                if flag[node.name]==False:
+                if node.output[0] not in flag:
                     new_node.append(node)
-                    names.append(name for name in node.output)
-                    flag[node.name] = True
-                else:
-                    continue
-            # breakpoint()
-            for id, i in enumerate(node.input):
-                if i not in names:
-                    break
-                    # breakpoint()
-                elif id == len(node.input)-1:
-                    if flag[node.name]==False:
+                    for o in node.output:
+                        flag.append(o)
+            else:
+                for i in node.input:
+                    if i not in flag:
+                        break
+                    elif i == node.input[-1] and node not in new_node:
                         new_node.append(node)
-                        for name in node.output:
-                            names.append(name)
-                        flag[node.name] = True
-                        # breakpoint()
-                    else:
-                        continue
-        # print(len(new_node))
+                        for o in node.output:
+                            flag.append(o)
         if len(nodes) == len(new_node):
             break
-        # breakpoint()
     new_graph = helper.make_graph(new_node,'graph',input,output,initialize,value_info=value_info)
     new_model = helper.make_model(new_graph,opset_imports = opset)
     return new_model
 
-def infer_shape(model_path,tmp_model_path):
-    model = onnx.load(model_path)
-    temp_model = onnx.load(model_path)
+def infer_shape(model):
+    if isinstance(model, ModelProto):
+        origin_model = model
+        temp_model = copy.deepcopy(model)
+    else:
+        origin_model = onnx.load(model)
+        temp_model = onnx.load(model)
     output_name = [i.name for i in temp_model.graph.output]
     for node in temp_model.graph.node:
         for output in node.output:
             if output not in output_name:
                 temp_model.graph.output.extend([onnx.ValueInfoProto(name=output)])
-    onnx.save(temp_model, tmp_model_path)
 
-    input_dic = get_input(tmp_model_path)
-    # breakpoint()
-    try:
-        sess = onnxruntime.InferenceSession(tmp_model_path,providers=['CPUExecutionProvider'])
-        output_names = [out.name for out in sess.get_outputs()]
-        res = sess.run(output_names, input_dic)
-        for item, name in zip(res,output_names):
-            if name not in model.graph.output:
-                shape = item.shape
-                # print(str(item.dtype))
-                vinf = onnx.helper.make_tensor_value_info(name, numpy_type[str(item.dtype)], shape)
-                model.graph.value_info.append(vinf)
-        os.system('rm -rf {}'.format(tmp_model_path))
-    except Exception as e:
-        print('Error: {}'.format(e))
-        os.system('rm -rf {}'.format(tmp_model_path))
-        return None
-    return model
+    input_dic = get_input(temp_model)
+  
+    sess = onnxruntime.InferenceSession(temp_model.SerializeToString,providers=['CPUExecutionProvider'])
+    output_names = [out.name for out in sess.get_outputs()]
+    res = sess.run(output_names, input_dic)
+    for item, name in zip(res,output_names):
+        if name not in origin_model.graph.output:
+            shape = item.shape
+                
+            vinf = onnx.helper.make_tensor_value_info(name, numpy_type[str(item.dtype)], shape)
+            origin_model.graph.value_info.append(vinf)
+    return origin_model
